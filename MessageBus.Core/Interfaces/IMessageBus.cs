@@ -15,7 +15,7 @@ public interface IMessageBus : IDisposable
     /// <summary>
     ///     Отправка сообщений одной пачкой
     /// </summary>
-    void BatchPublish<T>(IEnumerable<T> items, string routingKey = "") where T : IMessage;
+    void PublishBatch<T>(IEnumerable<T> items, string routingKey = "") where T : IMessage;
 
     /// <summary>
     ///     Подписаться на exchange
@@ -26,4 +26,10 @@ public interface IMessageBus : IDisposable
     /// <param name="prefetchCount">Кол-во сообщений при приемке за раз</param>
     void Subscribe<T>(Action<T> handler, [CallerMemberName]string consumerName = "", string routingKey = "", ushort prefetchCount = 0)
         where T : IMessage;
+
+    /// <summary>
+    ///     Подписка с обработкой сообщений пачками
+    /// </summary>
+    void SubscribeBatch<T>(Action<T> handler, [CallerMemberName] string consumerName = "",
+        string routingKey = "") where T : IMessage;
 }

@@ -1,6 +1,6 @@
 using MessageBus.Core.Enums;
 
-namespace MessageBus.Core;
+namespace MessageBus.Core.Models;
 
 /// <summary>
 ///     Конфигурация подключения

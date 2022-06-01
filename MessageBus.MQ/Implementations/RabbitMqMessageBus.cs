@@ -1,14 +1,11 @@
-using System.Runtime.CompilerServices;
-using MessageBus.Core;
 using MessageBus.Core.Enums;
 using MessageBus.Core.Exceptions;
 using MessageBus.Core.Interfaces;
+using MessageBus.Core.Models;
 using MessageBus.MQ.Attributes;
 using MessageBus.MQ.Enums;
-using MessageBus.MQ.Models;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
 
 namespace MessageBus.MQ.Implementations;
@@ -16,7 +13,7 @@ namespace MessageBus.MQ.Implementations;
 /// <summary>
 ///     Шина RabbitMQ
 /// </summary>
-public class RabbitMqMessageBus : IMessageBus
+public partial class RabbitMqMessageBus : IMessageBus
 {
     /// <summary>
     ///     Логировщик
@@ -44,11 +41,23 @@ public class RabbitMqMessageBus : IMessageBus
     /// <remarks>Ключ - номер канала</remarks>
     private Dictionary<int, IModel?> _activeSubscriptions = new();
 
+    /// <summary>
+    ///     Кэш соединений
+    /// </summary>
+    /// <remarks>Ключ - Alias из конфигураци</remarks>
     private readonly Dictionary<string, IConnection?> _connections = new();
 
-    private Dictionary<Type, IConnection> _typeToConnectionReferences = new();
+    /// <summary>
+    ///     Кэш-связка типа сообщения и соответствующего соединения
+    /// </summary>
+    /// <remarks>Ключ - тип сообщения</remarks>
+    private readonly Dictionary<Type, IConnection> _typeToConnectionReferences = new();
     
-    private Dictionary<Type, TopicAttribute> _topicAttributes = new();
+    /// <summary>
+    ///     Кэш значений атрибутов на типе сообщения
+    /// </summary>
+    /// <remarks>Ключ - тип сообщения</remarks>
+    private readonly Dictionary<Type, TopicAttribute> _topicAttributes = new();
 
     /// <summary>
     ///     .ctor
@@ -103,185 +112,6 @@ public class RabbitMqMessageBus : IMessageBus
         config.TransportType == TransportType.RabbitMq;
 
     /// <summary>
-    ///     Очистим за собой коннекты
-    /// </summary>
-    public void Dispose()
-    {
-        // Закрываем каналы
-        foreach (var (channelNum, value) in _activeSubscriptions)
-        {
-            if (value == null) continue;
-            value.Close();
-            value.Dispose();
-            _logger.LogInformation("Subscription channel {ChNum} closed", channelNum);
-        }
-        
-        // Очищаем соединения
-        foreach (var (connectionName, value) in _connections)
-        {
-            value?.Dispose();
-            _logger.LogInformation("Connection {Name} closed", connectionName);
-        }
-    }
-
-    /// <inheritdoc />
-    public void Publish<T>(T item, string routingKey = "") where T : IMessage
-    {
-        var connection = GetConnection<T>();
-        using var channel = connection.CreateModel();
-
-        // Собрать информацию для публикации
-        var info = BuildPublishInfo<T>(channel);
-        var message = BuildMessage(item, info.TopicAttribute);
-        
-        // Отправка
-        channel.BasicPublish(info.ExchangeName, routingKey, mandatory: false, basicProperties: info.BasicProperties, body: message);
-    }
-
-    /// <summary>
-    ///     Отправка сообщений одной пачкой
-    /// </summary>
-    public void BatchPublish<T>(IEnumerable<T> items, string routingKey = "") where T : IMessage
-    {
-        var connection = GetConnection<T>();
-        using var channel = connection.CreateModel();
-        
-        // Собрать информацию для публикации
-        var info = BuildPublishInfo<T>(channel);
-        
-        // Создать пачку сообщений
-        var batch = channel.CreateBasicPublishBatch();
-        foreach (var item in items)
-        {
-            var message = BuildMessage(item, info.TopicAttribute);
-            var bytes = new ReadOnlyMemory<byte>(message);
-            batch.Add(info.ExchangeName, routingKey, mandatory: false, properties: info.BasicProperties, bytes);
-        }
-        batch.Publish();
-    }
-
-    /// <summary>
-    ///     Собрать информацию для публикации сообщения
-    /// </summary>
-    private PublishInfo BuildPublishInfo<T>(IModel channel)
-    {
-        // Если нет exchange - создадим
-        var topicAttribute = GetTopicAttribute<T>();
-        var exchangeName = DeclareExchange(topicAttribute, channel);
-        
-        // Собрать детали сообщения
-        var args = BuildArguments(topicAttribute, channel);
-
-        return new PublishInfo
-        {
-            TopicAttribute = topicAttribute,
-            ExchangeName = exchangeName,
-            BasicProperties = args
-        };
-    }
-    
-    /// <summary>
-    ///     Подписаться на exchange
-    /// </summary>
-    /// <remarks>Подписка не напрямую, а всегда через очередь</remarks>
-    public void Subscribe<T>(Action<T> handler, [CallerMemberName] string consumerName = "", string routingKey = "",
-        ushort prefetchCount = 0) where T : IMessage
-    {
-        var connection = GetConnection<T>();
-        var channel = connection.CreateModel();
-
-        // Если нет очереди - создадим и привяжем к exchange
-        // Имя очереди = Exchange$ConsumerName
-        var topicAttribute = GetTopicAttribute<T>();
-
-        // Если вид топика не BindingKey - не важно что передали, ставим пусто
-        var routeKey = topicAttribute.RoutingType == RoutingType.BindingKey ? routingKey : string.Empty;
-        var topicName = DeclareTopic(topicAttribute, consumerName, channel, routeKey);
-
-        // Задаем prefetch
-        channel.BasicQos(0, prefetchCount, false);
-
-        // Подписываемся
-        var consumer = CreateConsumer(channel, consumerName);
-        consumer.Received += (s, e) =>
-        {
-            ConsumerOnReceived(s, e, handler, topicAttribute);
-
-            // Помечаем сообщение обработанным, какой бы результат ни был
-            channel.BasicAck(e.DeliveryTag, false);
-        };
-        channel.BasicConsume(topicName, false, consumer);
-        _activeSubscriptions.Add(channel!.ChannelNumber, channel);
-    }
-
-    /// <summary>
-    ///     Создание подписчика
-    /// </summary>
-    private EventingBasicConsumer CreateConsumer(IModel? channel, string consumerName)
-    {
-        var consumer = new EventingBasicConsumer(channel);
-        var key = channel!.ChannelNumber;
-        consumer.Registered += (_, _) => _logger.LogInformation("Subscription {ConsumerName} registered", consumerName);
-        consumer.Unregistered += (_, _) => _logger.LogInformation("Subscription {ConsumerName} unregistered", consumerName);
-        consumer.Shutdown += (_, e) =>
-        {
-            // Если висит открытый канал - закрываем его
-            var activeCh = _activeSubscriptions.TryGetValue(key, out var ch);
-            if (activeCh)
-            {
-                if (ch!.IsOpen)
-                {
-                    ch.Close();
-                    ch.Dispose();
-                }
-                _activeSubscriptions.Remove(key);
-            }
-            _logger.LogInformation("Subscription {ConsumerName} shutdown because: {Reason}", consumerName, e.ReplyText);
-        };
-        return consumer;
-    }
-    
-    /// <summary>
-    ///     Обработчик входящего сообщения
-    /// </summary>
-    private void ConsumerOnReceived<T>(object? sender, BasicDeliverEventArgs e, Action<T?> handler, TopicAttribute attribute)
-    {
-        try
-        {
-            _logger.LogInformation("New message {DeliveryTag} at {Exchange}", e.DeliveryTag, e.Exchange);
-            var serializer = GetSerializer(attribute);
-            var content = serializer.Deserialize<T>(e.Body.ToArray());
-            try
-            {
-                handler.Invoke(content);
-                _logger.LogInformation("Message {DeliveryTag} successfully handled at {Exchange}", e.DeliveryTag,
-                    e.Exchange);
-            }
-            catch (Exception exception)
-            {
-                Redeliver(content, attribute);
-                _logger.LogError(exception, "Failed to handle {DeliveryTag} at {Exchange}", e.DeliveryTag,
-                    e.Exchange);
-            }
-        }
-        catch (Exception exception)
-        {
-            _logger.LogError(exception, "There's an error during consume {DeliveryTag} at {Exchange}", e.DeliveryTag,
-                e.Exchange);
-        }
-    }
-
-    /// <summary>
-    ///     Переотправить сообщение в очередь если не удалось обработать сразу
-    /// </summary>
-    private void Redeliver<T>(T? content, TopicAttribute attribute)
-    {
-        // Пока заглушка
-        // В хэдеры запишем номер попытки
-        // Если попыток больше чем константа - удаляем сообщение
-    }
-
-    /// <summary>
     ///     Создать очередь и привязать к Exchange
     /// </summary>
     private string DeclareTopic(TopicAttribute attribute, string consumerName, IModel? channel, string routingKey = "")
@@ -296,16 +126,6 @@ public class RabbitMqMessageBus : IMessageBus
 
         return topicName;
     }
-    
-    /// <summary>
-    ///     Построить сообщение
-    /// </summary>
-    private byte[] BuildMessage<T>(T item, TopicAttribute attribute)
-    {
-        var serializer = GetSerializer(attribute);
-        var message = serializer.Serialize(item);
-        return message;
-    }
 
     /// <summary>
     ///     Получить сериализатор
@@ -317,22 +137,6 @@ public class RabbitMqMessageBus : IMessageBus
             throw new MessageBusException($"MessageBus serializer {attribute.SerializerType} not supported yet");
         
         return serializer;
-    }
-
-    /// <summary>
-    ///     Сборка справочника аргументов из атрибута
-    /// </summary>
-    private IBasicProperties? BuildArguments(TopicAttribute attribute, IModel? channel)
-    {
-        var props = channel!.CreateBasicProperties();
-        
-        // Если есть Ttl - задаем
-        if (attribute.Ttl != default && attribute.Ttl > TimeSpan.Zero)
-        {
-            props.Expiration = attribute.Ttl.TotalMilliseconds.ToString();
-        }
-
-        return props;
     }
 
     /// <summary>
@@ -426,5 +230,28 @@ public class RabbitMqMessageBus : IMessageBus
         
         _topicAttributes.Add(type, topic);
         return topic;
+    }
+    
+    
+    /// <summary>
+    ///     Очистим за собой коннекты
+    /// </summary>
+    public void Dispose()
+    {
+        // Закрываем каналы
+        foreach (var (channelNum, value) in _activeSubscriptions)
+        {
+            if (value == null) continue;
+            value.Close();
+            value.Dispose();
+            _logger.LogInformation("Subscription channel {ChNum} closed", channelNum);
+        }
+        
+        // Очищаем соединения
+        foreach (var (connectionName, value) in _connections)
+        {
+            value?.Dispose();
+            _logger.LogInformation("Connection {Name} closed", connectionName);
+        }
     }
 }

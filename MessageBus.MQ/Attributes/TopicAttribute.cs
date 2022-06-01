@@ -14,16 +14,20 @@ public class TopicAttribute : Attribute
     ///     .ctor
     /// </summary>
     public TopicAttribute(string connectionAlias, string name,
-        RoutingType routingType = RoutingType.Fanout, string ttl = "",
-        SerializerType serializerType = SerializerType.Json)
+        RoutingType routingType = RoutingType.Fanout, int ttl = 0,
+        SerializerType serializerType = SerializerType.Json, int batchDelay = 0, ushort batchSize = 0)
     {
         Name = name;
         RoutingType = routingType;
         ConnectionAlias = connectionAlias;
-        Ttl = string.IsNullOrWhiteSpace(ttl) || !int.TryParse(ttl, out var ttlMs)
+        Ttl = ttl <= 0
             ? TimeSpan.Zero
-            : TimeSpan.FromSeconds(ttlMs);
+            : TimeSpan.FromSeconds(ttl);
         SerializerType = serializerType;
+        BatchDelay = batchDelay <= 0
+            ? TimeSpan.Zero
+            : TimeSpan.FromSeconds(batchDelay);
+        BatchSize = batchSize <= 0 ? (ushort)1 : batchSize;
     }
 
     /// <summary>
@@ -54,5 +58,15 @@ public class TopicAttribute : Attribute
     /// <summary>
     ///     Кол-во попыток на обработку
     /// </summary>
-    public int HandleAttempts { get; set; } = 1;
+    public int HandleAttempts { get; } = 1;
+    
+    /// <summary>
+    ///     Задержка на время сборка пачки
+    /// </summary>
+    public TimeSpan BatchDelay { get; }
+    
+    /// <summary>
+    ///     Максимальный размер пачки
+    /// </summary>
+    public ushort BatchSize { get; }
 }

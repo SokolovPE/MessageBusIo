@@ -1,6 +1,7 @@
 using System.Reflection;
 using MessageBus.Core.Implementations;
 using MessageBus.Core.Interfaces;
+using MessageBus.Core.Models;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MessageBus.Core.Extensions;
