@@ -1,3 +1,4 @@
+using MessageBus.Core.Exceptions;
 using MessageBus.Core.Interfaces;
 using MessageBus.MQ.Attributes;
 using MessageBus.MQ.Models;
@@ -29,6 +30,12 @@ public partial class RabbitMqMessageBus
     /// </summary>
     public void PublishBatch<T>(IEnumerable<T> items, string routingKey = "") where T : IMessage
     {
+        // Проверить разрешены ли batch операции впринципе
+        var batchAttribute = GetBatchAttribute<T>();
+        if (!batchAttribute.Allowed)
+            throw new MessageBusException(
+                $"Batch operations with {typeof(T).FullName} are not allowed or batch attribute is missing");
+        
         var connection = GetConnection<T>();
         using var channel = connection.CreateModel();
         

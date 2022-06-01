@@ -8,7 +8,8 @@ namespace TestConsole;
 /// <summary>
 ///     Демо-сущность
 /// </summary>
-[Topic(name: nameof(Person), connectionAlias: "DemoRabbitMq", batchDelay: 15, batchSize: 3)]
+[Topic(name: nameof(Person), connectionAlias: "DemoRabbitMq")]
+[Batch(allowed:true, batchDelay: 15, batchSize: 3)]
 public record Person : IMessage
 {
     /// <summary>

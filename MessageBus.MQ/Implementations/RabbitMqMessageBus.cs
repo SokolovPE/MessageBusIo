@@ -54,10 +54,16 @@ public partial class RabbitMqMessageBus : IMessageBus
     private readonly Dictionary<Type, IConnection> _typeToConnectionReferences = new();
     
     /// <summary>
-    ///     Кэш значений атрибутов на типе сообщения
+    ///     Кэш значений атрибутов-описаний топика на типе сообщения
     /// </summary>
     /// <remarks>Ключ - тип сообщения</remarks>
     private readonly Dictionary<Type, TopicAttribute> _topicAttributes = new();
+    
+    /// <summary>
+    ///     Кэш значений атрибутов с описанием batch операций на типе сообщения
+    /// </summary>
+    /// <remarks>Ключ - тип сообщения</remarks>
+    private readonly Dictionary<Type, BatchAttribute> _batchAttributes = new();
 
     /// <summary>
     ///     .ctor
@@ -224,11 +230,38 @@ public partial class RabbitMqMessageBus : IMessageBus
         
         // Если не нашлось - найдем и закэшируем
         var attributesFound = type.GetCustomAttributes(typeof(TopicAttribute), false);
-        if (attributesFound.Length > 1)
-            throw new MessageBusException($"Model {typeof(T).FullName} contains multiple Topic attributes somehow");
+        
+        if (attributesFound.Length != 1)
+            throw new MessageBusException($"Model {typeof(T).FullName} contains multiple/none Topic attribute");
         var topic = (TopicAttribute) attributesFound[0];
         
         _topicAttributes.Add(type, topic);
+        return topic;
+    }
+
+    /// <summary>
+    ///     Получить атрибут с информацией по batch операциям из сущности
+    /// </summary>
+    private BatchAttribute GetBatchAttribute<T>()
+    {
+        var type = typeof(T);
+        
+        // Сначала поиск в кэше
+        var cached = _batchAttributes.TryGetValue(type, out var attribute);
+        if (cached)
+            return attribute ?? throw new MessageBusException($"Batch attribute is empty somehow for {type.FullName}");
+        
+        // Если не нашлось - найдем и закэшируем
+        var attributesFound = type.GetCustomAttributes(typeof(BatchAttribute), false);
+        if (attributesFound.Length > 1)
+            throw new MessageBusException($"Model {typeof(T).FullName} contains multiple Batch attributes somehow");
+        
+        // Если не нашлось атрибута - считаем что batch операции запрещены
+        var topic = attributesFound.Length == 0
+            ? new BatchAttribute(allowed: false)
+            : (BatchAttribute)attributesFound[0];
+        
+        _batchAttributes.Add(type, topic);
         return topic;
     }
     

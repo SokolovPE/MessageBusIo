@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using MessageBus.Core.Exceptions;
 using MessageBus.Core.Interfaces;
 using MessageBus.Core.Types;
 using MessageBus.MQ.Attributes;
@@ -48,9 +49,18 @@ public partial class RabbitMqMessageBus
         _activeSubscriptions.Add(channel!.ChannelNumber, channel);
     }
 
+    /// <summary>
+    ///     Подписаться на обработку сообщений пачками
+    /// </summary>
     public void SubscribeBatch<T>(Action<T> handler, [CallerMemberName] string consumerName = "",
         string routingKey = "") where T : IMessage
     {
+        // Проверить разрешены ли batch операции впринципе
+        var batchAttribute = GetBatchAttribute<T>();
+        if (!batchAttribute.Allowed)
+            throw new MessageBusException(
+                $"Batch operations with {typeof(T).FullName} are not allowed or batch attribute is missing");
+        
         var connection = GetConnection<T>();
         var channel = connection.CreateModel();
 
@@ -63,10 +73,10 @@ public partial class RabbitMqMessageBus
         var topicName = DeclareTopic(topicAttribute, consumerName, channel, routeKey);
 
         // Задаем prefetch
-        channel.BasicQos(0, topicAttribute.BatchSize, false);
+        channel.BasicQos(0, batchAttribute.BatchSize, false);
         
         // Создаем список с обрарботкой по таймеру либо превышению лимита
-        var bag = new TimerBag<T>(topicAttribute.BatchDelay, topicAttribute.BatchSize);
+        var bag = new TimerBag<T>(batchAttribute.BatchDelay, batchAttribute.BatchSize);
         bag.BatchProcessStarted += batchSize => _logger.LogInformation("{ExecTime} Batch process of {TypeName} started, batchSize={Size}",
             DateTime.Now.ToString("hh:mm:ss"), typeof(T).FullName, batchSize);
         bag.BatchProcessFailed += e =>
